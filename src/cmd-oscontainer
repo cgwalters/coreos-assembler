@@ -1,0 +1,105 @@
+#!/usr/bin/python3
+# An "oscontainer" is an ostree (archive) repository stuck inside
+# a Docker/OCI container at /srv/repo.  For more information,
+# see https://github.com/openshift/pivot
+#
+# This command manipulates those images.
+
+import gi
+gi.require_version('OSTree', '1.0')
+from gi.repository import GLib, Gio, OSTree
+import os,sys,json,shutil,argparse,subprocess,re,collections
+import tempfile,hashlib,gzip
+
+# See also flatpak_arch_to_oci_arch
+ostree_arch_to_oci = {
+    "x86_64": "amd64",
+    "aarch64": "arm64",
+    "i386": "386",
+}
+
+def run_get_json(args):
+    return json.loads(subprocess.check_output(args))
+
+# Given a container reference, pull the latest version, then extract the ostree
+# repo a new directory dest/repo.
+def oscontainer_extract(containers_storage, src, dest,
+                        tls_verify=True):
+    dest=os.path.realpath(dest)
+    subprocess.check_call(["ostree", "--repo="+dest, "refs"])
+    rootarg = '--root='+containers_storage
+    if not tls_verify:
+        tls_arg = '--tls-verify=false'
+    else:
+        tls_arg = '--tls-verify'
+    subprocess.check_call(['podman', rootarg, 'pull', tls_arg, src])
+    iid = run_get_json(['podman', rootarg, 'inspect', src])[0]['Id']
+    # /enoent since there's no binaries in this container, we're not
+    # actually going to run it, but `podman create` thinks we want to.
+    # The main thing this does is "materialize" the merged rootfs,
+    # so we can mount it.
+    cid = subprocess.check_output(['podman', rootarg, 'create', '--entrypoint=/enoent', iid]).strip()
+    mnt = subprocess.check_output(['podman', rootarg, 'mount', cid]).strip().decode('UTF-8')
+    src_repo = mnt+'/srv/repo'
+
+    subprocess.check_call(["ostree", "--repo="+dest, "pull-local", src_repo])
+
+# Given an OSTree repository at src (and exactly one ref) generate an oscontainer
+# with it.
+def oscontainer_build(containers_storage, src, image_name_and_tag, push=False):
+    r = OSTree.Repo.new(Gio.File.new_for_path(src))
+    r.open(None)
+
+    [_, refs] = r.list_refs(None, None)
+    if len(refs) != 1:
+        raise SystemExit("Expected exactly 1 ref, found {}".format(len(refs)))
+    the_ref = list(refs)[0]
+    current_rev = refs[the_ref]
+    print("Resolved {} = {}".format(the_ref, current_rev))
+    [_, ostree_commit, _] = r.load_commit(current_rev)
+    ostree_commitmeta = ostree_commit.get_child_value(0)
+    versionv = ostree_commitmeta.lookup_value("version", GLib.VariantType.new("s"))
+    if versionv:
+        ostree_version = versionv.get_string()
+    else:
+        ostree_version = None
+
+    rootarg = '--root='+containers_storage
+    bid = subprocess.check_output(['buildah', rootarg, 'from', 'scratch']).strip()
+    subprocess.check_call(['buildah', rootarg, 'copy', bid, src, '/srv/repo'])
+    subprocess.check_call(['buildah', rootarg, 'config',
+                           '-l', 'io.openshift.os-commit='+current_rev, bid])
+    if ostree_version is not None:
+        subprocess.check_call(['buildah', rootarg, 'config',
+                               '-l', 'io.openshift.os-version='+ostree_version, bid])
+    subprocess.check_call(['buildah', rootarg, 'commit', bid, image_name_and_tag])
+    if push:
+        subprocess.check_call(['podman', rootarg, 'push', image_name_and_tag])
+
+# Parse args and dispatch
+parser = argparse.ArgumentParser()
+parser.add_argument("--workdir", help="Temporary working directory",
+                    required=True)
+parser.add_argument("--disable-tls-verify", help="Disable TLS for pushes and pulls",
+                    action="store_true")
+subparsers = parser.add_subparsers(dest='action')
+parser_extract = subparsers.add_parser('extract', help='Extract an oscontainer')
+parser_extract.add_argument("src", help="Image reference")
+parser_extract.add_argument("dest", help="Destination directory")
+parser_build = subparsers.add_parser('build', help='Build an oscontainer')
+parser_build.add_argument("src", help="OSTree repository")
+parser_build.add_argument("name", help="Image name")
+parser_build.add_argument("--push", help="Push to registry",
+                          action='store_true')
+args = parser.parse_args()
+
+containers_storage=args.workdir+'/containers-storage'
+if os.path.exists(containers_storage):
+    shutil.rmtree(containers_storage)
+
+if args.action == 'extract':
+    oscontainer_extract(containers_storage, args.src, args.dest,
+                        tls_verify=not args.disable_tls_verify)
+elif args.action == 'build':
+    oscontainer_build(containers_storage, args.src, args.name,
+                      push=args.push)
