@@ -1,0 +1,6 @@
+FROM quay.io/cgwalters/coreos-assembler
+USER root
+WORKDIR /root/src
+COPY . /root/src
+RUN git submodule update --init && make && make install && rm /root/src -rf
+USER builder
