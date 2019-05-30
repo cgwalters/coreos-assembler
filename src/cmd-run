@@ -89,6 +89,9 @@ fi
 # make sure disk path is absolute
 VM_DISK=$(realpath "${VM_DISK}")
 
+ignition_version=$(disk_ignition_version "${VM_DISK}")
+ign_validate="ignition-validate"
+
 # Emulate the host CPU closely in both features and cores.
 set -- -machine accel=kvm -cpu host -smp "${VM_NCPUS}" "$@"
 
@@ -161,12 +164,19 @@ EOF
     }
 }
 EOF
+    if [ "${ignition_version}" = "2.2.0" ]; then
+        ign_validate="true"
+        spec2f=$(mktemp)
+        /usr/lib/coreos-assembler/ign-3to2 "${f}" > "${spec2f}"
+        mv "${spec2f}" "${f}"
+    fi
+
     exec 3<>"${f}"
     rm -f "${f}"
     IGNITION_CONFIG_FILE=/proc/self/fd/3
 
-    if ! ignition-validate "${IGNITION_CONFIG_FILE}"; then
-        cat "${IGNITION_CONFIG_FILE}"
+    if ! ${ign_validate} "${IGNITION_CONFIG_FILE}"; then
+        jq . < "${IGNITION_CONFIG_FILE}"
         exit 1
     fi
 fi
