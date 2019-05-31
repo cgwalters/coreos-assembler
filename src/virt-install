@@ -27,7 +27,7 @@ def fatal(msg):
     raise SystemExit(1)
 
 # Set of valid keys in image.yaml
-IMAGE_CONF_KEYS = ['size', 'postprocess-script', 'extra-kargs']
+IMAGE_CONF_KEYS = ['size', 'inject-core-user', 'postprocess-script', 'extra-kargs']
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--dest", help="Destination disk",
@@ -129,6 +129,10 @@ if subprocess.call(['ostree', f"--repo={args.ostree_repo}", 'ls', args.ostree_re
     installclass --name="Red Hat Enterprise Linux"
     %end
     """)
+
+# Undocumented hack until we change Ignition to handle this
+if image_conf.get('inject-core-user'):
+    ks_tmp.write("user --name=core --groups='wheel,sudo,adm,systemd-journal'\n")
 
 # This is an implementation detail of https://github.com/coreos/ignition-dracut
 # So we hardcode it here.
