@@ -42,6 +42,7 @@ run as part of 'coreos-assembler build'.
 EOC
 }
 
+disk=
 rootfs_size="0"
 boot_verity=0
 rootfs_type="xfs"
@@ -78,7 +79,15 @@ udevtrig() {
 
 export PATH=$PATH:/sbin:/usr/sbin
 arch="$(uname -m)"
-disk="${disk:?--disk must be defined}"
+
+if [ -z "${disk:-}" ]; then
+    disk=/dev/disk/by-id/cosatarget
+    if [ ! -b "${disk}" ]; then
+        echo "failed to find ${disk}" 1>&2
+        exit 1
+    fi
+fi
+
 buildid="${buildid:?--buildid must be defined}"
 imgid="${imgid:?--imgid must be defined}"
 ostree="${ostree:?--ostree-repo must be defined}"
