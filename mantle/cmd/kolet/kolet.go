@@ -42,6 +42,8 @@ const (
 
 // kolaRebootStamp should be created by tests that want to reboot
 const kolaRebootStamp = "/run/kola-reboot"
+// kolaForeceRebootStamp should be created by tests that want to immediately force a reboot
+const kolaForceRebootStamp = "/run/kola-force-reboot"
 
 var (
 	plog = capnslog.NewPackageLogger("github.com/coreos/mantle", "kolet")
