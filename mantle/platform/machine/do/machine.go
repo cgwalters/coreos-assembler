@@ -66,7 +66,11 @@ func (dm *machine) IgnitionError() error {
 }
 
 func (dm *machine) Reboot() error {
-	return platform.RebootMachine(dm, dm.journal)
+	return platform.RebootMachine(dm, false, dm.journal)
+}
+
+func (m *machine) ForceReboot() error {
+	return platform.RebootMachine(m, true, m.journal)
 }
 
 func (dm *machine) WaitForReboot(timeout time.Duration, oldBootId string) error {

@@ -26,8 +26,6 @@ import (
 	"strings"
 	"time"
 
-	"golang.org/x/crypto/ssh"
-
 	"github.com/coreos/go-semver/semver"
 	"github.com/coreos/pkg/capnslog"
 	"github.com/kballard/go-shellquote"
@@ -68,6 +66,12 @@ import (
 // and this will be automatically picked up.
 const InstalledTestsDir = "/usr/lib/coreos-assembler/tests/kola"
 const InstalledTestMetaPrefix = "# kola:"
+
+const (
+	KOLET_RESULT_OK           = "ok"
+	KOLET_RESULT_REBOOT       = "reboot"
+	KOLET_RESULT_FORCE_REBOOT = "force-reboot"
+)
 
 var (
 	plog = capnslog.NewPackageLogger("github.com/coreos/mantle", "kola")
@@ -592,20 +596,18 @@ RequiredBy=multi-user.target
 			var err error
 			for {
 				plog.Debug("Starting kolet run-test-unit")
-				_, stderr, err = mach.SSH(fmt.Sprintf("sudo ./kolet run-test-unit %s", shellquote.Join(unitname)))
-				if exit, ok := err.(*ssh.ExitError); ok {
-					plog.Debug("Caught ssh.ExitError")
-					// In the future I'd like to better support having the host reboot itself and
-					// we just detect it.
-					if exit.Signal() == "TERM" {
-						plog.Debug("Caught SIGTERM from kolet run-test-unit, rebooting machine")
-						suberr := mach.Reboot()
-						if suberr == nil {
-							err = nil
-							continue
-						}
-						plog.Debug("Propagating ssh.ExitError")
-						err = suberr
+				stdout, _, err := mach.SSH(fmt.Sprintf("sudo ./kolet run-test-unit %s", shellquote.Join(unitname)))
+				result := strings.TrimSpace(string(stdout))
+				if result == KOLET_RESULT_OK {
+					break
+				} else {
+					if result == KOLET_RESULT_REBOOT {
+						err = mach.Reboot()
+					} else if result == KOLET_RESULT_FORCE_REBOOT {
+						err = mach.ForceReboot()
+					}
+					if err == nil {
+						continue
 					}
 				}
 				// Other errors, just bomb out for now

@@ -76,6 +76,9 @@ type Machine interface {
 	// Reboot restarts the machine and waits for it to come back.
 	Reboot() error
 
+	// ForceReboot forcibly reboots the machine and waits for it to come back.
+	ForceReboot() error
+
 	// WaitForReboot waits for the machine to restart and waits for it to come back.
 	WaitForReboot(time.Duration, string) error
 

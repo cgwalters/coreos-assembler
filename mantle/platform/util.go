@@ -88,8 +88,16 @@ func Manhole(m Machine) error {
 
 // Reboots a machine, stopping ssh first.
 // Afterwards run CheckMachine to verify the system is back and operational.
-func StartReboot(m Machine) error {
-	out, stderr, err := m.SSH("sudo reboot")
+func StartReboot(m Machine, force bool) error {
+	cmd := "sudo reboot"
+	if force {
+		// In the future we should also implement support for this
+		// in the platform to even more closely simulate power loss,
+		// but this is close enough for all cases we care about that
+		// I can think of.
+		cmd = "systemd-run -- /bin/sh -c 'systemctl stop systemd-user-sessions && pkill -f sshd && sleep 0.5 && reboot -ff'"
+	}
+	out, stderr, err := m.SSH(cmd)
 	if _, ok := err.(*ssh.ExitMissingError); ok {
 		// A terminated session is perfectly normal during reboot.
 		err = nil
@@ -101,12 +109,12 @@ func StartReboot(m Machine) error {
 }
 
 // RebootMachine will reboot a given machine, provided the machine's journal.
-func RebootMachine(m Machine, j *Journal) error {
+func RebootMachine(m Machine, force bool, j *Journal) error {
 	bootId, err := GetMachineBootId(m)
 	if err != nil {
 		return err
 	}
-	if err := StartReboot(m); err != nil {
+	if err := StartReboot(m, force); err != nil {
 		return fmt.Errorf("machine %q failed to begin rebooting: %v", m.ID(), err)
 	}
 	return StartMachineAfterReboot(m, j, bootId)

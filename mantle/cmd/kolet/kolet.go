@@ -16,6 +16,7 @@ package main
 
 import (
 	"fmt"
+	"io/ioutil"
 	"os"
 	"strings"
 	"syscall"
@@ -28,6 +29,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/coreos/mantle/cli"
+	"github.com/coreos/mantle/kola"
 	"github.com/coreos/mantle/kola/register"
 
 	// Register any tests that we may wish to execute in kolet.
@@ -42,6 +44,7 @@ const (
 
 // kolaRebootStamp should be created by tests that want to reboot
 const kolaRebootStamp = "/run/kola-reboot"
+
 // kolaForeceRebootStamp should be created by tests that want to immediately force a reboot
 const kolaForceRebootStamp = "/run/kola-force-reboot"
 
@@ -152,9 +155,20 @@ func dispatchRunExtUnit(unitname string, sdconn *systemddbus.Conn) (bool, error)
 					if mainstatus == int32(0) {
 						_, err := os.Stat(kolaRebootStamp)
 						if err == nil {
-							systemdjournal.Print(systemdjournal.PriInfo, "Unit %s requested reboot via %s\n", unitname, kolaRebootStamp)
-							return false, requestRebootAndWait()
+							contents, err := ioutil.ReadFile(kolaRebootStamp)
+							if err != nil {
+								return false, err
+							}
+							if strings.HasPrefix(string(contents), "force") {
+								systemdjournal.Print(systemdjournal.PriInfo, "Unit %s requested force reboot via %s\n", unitname, kolaRebootStamp)
+							fmt.Println(kola.KOLET_RESULT_FORCE_REBOOT)
+							} else {
+								systemdjournal.Print(systemdjournal.PriInfo, "Unit %s requested reboot via %s\n", unitname, kolaRebootStamp)
+								fmt.Println(kola.KOLET_RESULT_REBOOT)
+							}
+							return true, nil
 						}
+						fmt.Println(kola.KOLET_RESULT_OK)
 						return true, nil
 					} else {
 						// I don't think this can happen, we'd have exit-code above; but just

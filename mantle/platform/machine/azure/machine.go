@@ -89,7 +89,15 @@ func (am *machine) refetchIPs() error {
 }
 
 func (am *machine) Reboot() error {
-	err := platform.RebootMachine(am, am.journal)
+	err := platform.RebootMachine(am, false, am.journal)
+	if err != nil {
+		return err
+	}
+	return am.refetchIPs()
+}
+
+func (am *machine) ForceReboot() error {
+	err := platform.RebootMachine(am, true, am.journal)
 	if err != nil {
 		return err
 	}
