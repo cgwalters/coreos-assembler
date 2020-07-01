@@ -31,7 +31,7 @@ var (
 	outputDir                   string
 	kolaPlatform                string
 	kolaArchitectures           = []string{"amd64"}
-	kolaPlatforms               = []string{"aws", "azure", "do", "esx", "gce", "openstack", "packet", "qemu", "qemu-unpriv"}
+	kolaPlatforms               = []string{"aws", "azure", "do", "esx", "gce", "openstack", "packet", "qemu", "qemu-unpriv", "qemu-iso"}
 	kolaDistros                 = []string{"fcos", "rhcos"}
 	kolaIgnitionVersionDefaults = map[string]string{
 		"cl":    "v2",
@@ -274,6 +274,10 @@ func syncCosaOptions() error {
 	case "qemu-unpriv", "qemu":
 		if kola.QEMUOptions.DiskImage == "" && kola.CosaBuild.Meta.BuildArtifacts.Qemu != nil {
 			kola.QEMUOptions.DiskImage = filepath.Join(kola.CosaBuild.Dir, kola.CosaBuild.Meta.BuildArtifacts.Qemu.Path)
+		}
+	case "qemu-iso":
+		if kola.QEMUIsoOptions.IsoPath == "" && kola.CosaBuild.Meta.BuildArtifacts.LiveIso != nil {
+			kola.QEMUIsoOptions.IsoPath = filepath.Join(kola.CosaBuild.Dir, kola.CosaBuild.Meta.BuildArtifacts.LiveIso.Path)
 		}
 	}
 

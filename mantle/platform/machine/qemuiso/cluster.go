@@ -1,4 +1,4 @@
-// Copyright 2019 Red Hat
+// Copyright 2020 Red Hat
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package unprivqemu
+package qemuiso
 
 import (
 	"fmt"
@@ -73,7 +73,7 @@ func (qc *Cluster) NewMachineWithOptions(userdata *conf.UserData, options platfo
 		}
 	} else if conf.IsEmpty() {
 	} else {
-		return nil, fmt.Errorf("unprivileged qemu only supports Ignition or empty configs")
+		return nil, fmt.Errorf("qemuiso only supports Ignition or empty configs")
 	}
 
 	journal, err := platform.NewJournal(dir)
@@ -92,8 +92,9 @@ func (qc *Cluster) NewMachineWithOptions(userdata *conf.UserData, options platfo
 	builder.ConfigFile = confPath
 	defer builder.Close()
 	builder.Uuid = qm.id
-	builder.Firmware = qc.flight.opts.Firmware
-	builder.Swtpm = qc.flight.opts.Swtpm
+	if qc.flight.opts.Firmware != "" {
+		builder.Firmware = qc.flight.opts.Firmware
+	}
 	builder.Hostname = fmt.Sprintf("qemu%d", qc.BaseCluster.AllocateMachineSerial())
 	builder.ConsoleToFile(qm.consolePath)
 
@@ -105,28 +106,7 @@ func (qc *Cluster) NewMachineWithOptions(userdata *conf.UserData, options platfo
 		builder.Memory = int(memory)
 	}
 
-	channel := "virtio"
-	if qc.flight.opts.Nvme {
-		channel = "nvme"
-	}
-	sectorSize := 0
-	if qc.flight.opts.Native4k {
-		sectorSize = 4096
-	}
-	multiPathDisk := false
-	if qc.flight.opts.MultiPathDisk {
-		multiPathDisk = true
-	}
-	primaryDisk := platform.Disk{
-		BackingFile:   qc.flight.opts.DiskImage,
-		Channel:       channel,
-		Size:          qc.flight.opts.DiskSize,
-		SectorSize:    sectorSize,
-		MultiPathDisk: multiPathDisk,
-	}
-	if err = builder.AddPrimaryDisk(&primaryDisk); err != nil {
-		return nil, errors.Wrapf(err, "adding primary disk")
-	}
+	builder.AddIso(qc.flight.opts.IsoPath, "")
 
 	for _, disk := range options.AdditionalDisks {
 		if err = builder.AddDisk(&disk); err != nil {
