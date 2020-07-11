@@ -190,10 +190,8 @@ type KoletResult struct {
 	Reboot string
 }
 
-// KoletRebootUnit is a systemd unit that sleeps until the harness acknowledges
-// a reboot request by stopping it.
-const KoletRebootWaitUnit = "kolet-reboot-wait.service"
 const KoletExtTestUnit = "kola-runext.service"
+const KoletRebootAckFifo = "/run/kolet-reboot-ack"
 
 // NativeRunner is a closure passed to all kola test functions and used
 // to run native go functions directly on kola machines. It is necessary
@@ -582,9 +580,9 @@ func runExternalTest(c cluster.TestCluster, mach platform.Machine) error {
 			previousRebootState = koletRes.Reboot
 			plog.Debugf("Reboot request with mark='%s'", previousRebootState)
 			// Stop sshd to ensure we don't race trying to log back in during shutdown
-			_, _, err = mach.SSH(fmt.Sprintf("sudo /bin/sh -c 'systemctl stop sshd && systemctl stop %s'", KoletRebootWaitUnit))
+			_, _, err = mach.SSH(fmt.Sprintf("sudo /bin/sh -c 'systemctl stop sshd && echo > %s'", KoletRebootAckFifo))
 			if err != nil {
-				return errors.Wrapf(err, "failed to stop %s", KoletRebootWaitUnit)
+				return errors.Wrapf(err, "failed to acknowledge reboot")
 			}
 			plog.Debug("Waiting for reboot")
 			suberr := mach.WaitForReboot(120*time.Second, bootID)
