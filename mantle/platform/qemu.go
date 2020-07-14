@@ -30,6 +30,7 @@ import (
 	"github.com/coreos/mantle/platform/conf"
 	"github.com/coreos/mantle/util"
 
+	v3 "github.com/coreos/ignition/v2/config/v3_0"
 	v3types "github.com/coreos/ignition/v2/config/v3_0/types"
 	"github.com/coreos/mantle/system"
 	"github.com/coreos/mantle/system/exec"
@@ -75,6 +76,8 @@ type QemuInstance struct {
 	nbdServers         []exec.Cmd
 	hostForwardedPorts []HostForwardPort
 
+	// waitChan will be non-nil if we are asynchronously waiting for process exit already
+	waitChan *<-chan error
 	journalPipe *os.File
 }
 
@@ -94,6 +97,9 @@ func (inst *QemuInstance) SSHAddress() (string, error) {
 
 // Wait for the qemu process to exit
 func (inst *QemuInstance) Wait() error {
+	if inst.waitChan != nil {
+		return <-*inst.waitChan
+	}
 	if inst.qemu != nil {
 		err := inst.qemu.Wait()
 		inst.qemu = nil
@@ -244,6 +250,8 @@ type QemuBuilder struct {
 	diskId    uint
 	disks     []*Disk
 	fs9pId    uint
+	virtioJournalQueries []string
+	virtioJournalQueryId uint
 	// virtioSerialId is incremented for each device
 	virtioSerialId uint
 	// fds is file descriptors we own to pass to qemu
@@ -922,47 +930,73 @@ func (builder *QemuBuilder) SerialPipe() (*os.File, error) {
 	return r, nil
 }
 
-// VirtioJournal configures the OS and VM to stream the systemd journal
-// (post-switchroot) over a virtio-serial channel.  The first return value
-// is an Ignition fragment that should be included in the target config,
-// and the file stream will be newline-separated JSON.  The optional
-// queryArguments filters the stream - see `man journalctl` for more information.
-func (builder *QemuBuilder) VirtioJournal(queryArguments string) (*v3types.Config, *os.File, error) {
-	stream, err := builder.VirtioChannelRead("mantlejournal")
-	if err != nil {
-		return nil, nil, err
-	}
+func confForJournalQuery(portid string, args string) v3types.Config {
 	var streamJournalUnit = fmt.Sprintf(`[Unit]
-	Requires=dev-virtio\\x2dports-mantlejournal.device
+	Requires=dev-virtio\\x2dports-%s.device
 	IgnoreOnIsolate=true
 	[Service]
 	Type=simple
-	StandardOutput=file:/dev/virtio-ports/mantlejournal
+	StandardOutput=file:/dev/virtio-ports/%s
 	ExecStart=/usr/bin/journalctl -q -b -f -o json --no-tail %s
 	[Install]
 	RequiredBy=multi-user.target
-	`, queryArguments)
+	`, portid, portid, args)
 
-	conf := v3types.Config{
+	return v3types.Config{
 		Ignition: v3types.Ignition{
 			Version: "3.0.0",
 		},
 		Systemd: v3types.Systemd{
 			Units: []v3types.Unit{
 				{
-					Name:     "mantle-virtio-journal-stream.service",
+					Name:     fmt.Sprintf("mantle-virtio-journal-%s.service", portid),
 					Contents: &streamJournalUnit,
 					Enabled:  util.BoolToPtr(true),
 				},
 			},
 		},
 	}
+}
+
+// VirtioJournal configures the OS and VM to stream the systemd journal
+// (post-switchroot) over a virtio-serial channel.  The first return value
+// is an Ignition fragment that should be included in the target config,
+// and the file stream will be newline-separated JSON.  The optional
+// queryArguments filters the stream - see `man journalctl` for more information.
+func (builder *QemuBuilder) VirtioJournal(queryArguments string) (*v3types.Config, *os.File, error) {
+	qid := builder.virtioJournalQueryId
+	builder.virtioJournalQueryId += 1
+	chanid := fmt.Sprintf("queryjournal%d", qid)
+	stream, err := builder.VirtioChannelRead(chanid)
+	if err != nil {
+		return nil, nil, err
+	}
+	conf := confForJournalQuery(chanid, queryArguments)
 	return &conf, stream, nil
+}
+
+// AppendVirtioJournal is like VirtioJournal, but automatically appends the required config
+// fragment to the config used by the VM
+func (builder *QemuBuilder) AppendVirtioJournal(queryArguments string) (*os.File, error) {
+	qid := len(builder.virtioJournalQueries)
+	chanid := fmt.Sprintf("appendqueryjournal%d", qid)
+	builder.virtioJournalQueries = append(builder.virtioJournalQueries, queryArguments)
+	return builder.VirtioChannelRead(chanid)
 }
 
 func (builder *QemuBuilder) Exec() (*QemuInstance, error) {
 	builder.finalize()
 	var err error
+
+	for qid, query := range builder.virtioJournalQueries {
+		if builder.ignition == nil {
+			panic("Using AppendVirtioJournal requires an ignition config")
+		}
+		chanid := fmt.Sprintf("appendqueryjournal%d", qid)
+		conf := confForJournalQuery(chanid, query)
+		newConf := v3.Merge(*builder.ignition, conf)
+		builder.ignition = &newConf
+	}
 
 	if err := builder.renderIgnition(); err != nil {
 		return nil, errors.Wrapf(err, "rendering ignition")
@@ -1149,6 +1183,62 @@ func (builder *QemuBuilder) Exec() (*QemuInstance, error) {
 
 	return &inst, nil
 }
+
+func (builder *QemuBuilder) ExecAwaitStartup() (*QemuInstance, error) {
+	// For example, Jul 13 23:44:44 cosa-devsh systemd[1]: Startup finished in 2.102s (kernel) + 3.362s (initrd) + 1.806s (userspace) = 7.270s.
+	journal, err := builder.AppendVirtioJournal("_PID=1 MESSAGE_ID=b07a249cd024414a82dd00cd181378ff")
+	if err != nil {
+		return nil, err
+	}
+
+	inst, err := builder.Exec()
+	if err != nil {
+		return nil, err
+	}
+
+	readyChan := make(chan struct{})
+	go func() {
+		r := bufio.NewReader(journal)
+		b, err := r.Peek(1)
+		if err != nil {
+			panic(err)
+		}
+		if len(b) == 0 {
+			return
+		}
+		close(readyChan)
+		for {
+			n, err := r.Discard(4096)
+			if n == 0 {
+				return
+			}
+			if err != nil {
+				panic(err)
+			}
+		}
+	}()
+	// Call WaitAll() internally
+	waitChan := make(chan error)
+	go func() {
+		err := inst.WaitAll()
+		waitChan <- err
+		close(waitChan)
+	}()
+
+	select {
+	case <-readyChan:
+		var waitChanR <-chan error
+		// Stash the waiting channel so the caller can just
+		// invoke .Wait()
+		waitChanR = waitChan
+		inst.waitChan = &waitChanR
+		return inst, nil
+	case err := <-waitChan:
+		inst.Destroy()
+		return nil, err
+	}
+}
+
 
 func (builder *QemuBuilder) Close() {
 	if builder.fds == nil {

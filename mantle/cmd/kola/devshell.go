@@ -107,16 +107,6 @@ func runDevShellSSH(builder *platform.QemuBuilder, conf *v3types.Config) error {
 
 	sshPubKey := v3types.SSHAuthorizedKey(strings.TrimSpace(string(sshPubKeyBuf)))
 
-	// Await sshd startup;
-	// src/systemd/sd-messages.h
-	// 89:#define SD_MESSAGE_UNIT_STARTED           SD_ID128_MAKE(39,f5,34,79,d3,a0,45,ac,8e,11,78,62,48,23,1f,bf)
-	journalConf, journalPipe, err := builder.VirtioJournal("-u sshd MESSAGE_ID=39f53479d3a045ac8e11786248231fbf")
-	if err != nil {
-		return err
-	}
-	confm := v3.Merge(*conf, *journalConf)
-	conf = &confm
-
 	devshellConfig := v3types.Config{
 		Ignition: v3types.Ignition{
 			Version: "3.0.0",
@@ -132,10 +122,8 @@ func runDevShellSSH(builder *platform.QemuBuilder, conf *v3types.Config) error {
 			},
 		},
 	}
-	confm = v3.Merge(*conf, devshellConfig)
+	confm := v3.Merge(*conf, devshellConfig)
 	conf = &confm
-
-	readyReader := bufio.NewReader(journalPipe)
 
 	builder.SetConfig(*conf, kola.Options.IgnitionVersion == "v2")
 
@@ -163,53 +151,18 @@ func runDevShellSSH(builder *platform.QemuBuilder, conf *v3types.Config) error {
 	}()
 
 	builder.InheritConsole = false
-	inst, err := builder.Exec()
+	inst, err := builder.ExecAwaitStartup()
 	if err != nil {
 		return err
 	}
 	defer inst.Destroy()
 
-	qemuWaitChan := make(chan error)
 	errchan := make(chan error)
-	readychan := make(chan struct{})
-	go func() {
-		buf, err := inst.WaitIgnitionError()
-		if err != nil {
-			errchan <- err
-		} else {
-			// TODO parse buf and try to nicely render something
-			if buf != "" {
-				errchan <- platform.ErrInitramfsEmergency
-			}
-		}
-	}()
-	go func() {
-		qemuWaitChan <- inst.Wait()
-	}()
-	go func() {
-		readyMsg, err := readTrimmedLine(readyReader)
-		if err != nil {
-			errchan <- err
-		}
-		if !strings.Contains(readyMsg, "Started OpenSSH server daemon") {
-			errchan <- fmt.Errorf("Unexpected journal message: %s", readyMsg)
-		}
-		var s struct{}
-		readychan <- s
-	}()
 	sigintChan := make(chan os.Signal, 1)
 	signal.Notify(sigintChan, os.Interrupt)
 
-loop:
 	for {
 		select {
-		case err := <-errchan:
-			if err == platform.ErrInitramfsEmergency {
-				return fmt.Errorf("instance failed in initramfs; try rerunning with --devshell-console")
-			}
-			return err
-		case err := <-qemuWaitChan:
-			return errors.Wrapf(err, "qemu exited before setup")
 		case serialMsg := <-serialChan:
 			displaySerialMsg(serialMsg)
 			if _, err := serialLog.Write([]byte(serialMsg)); err != nil {
@@ -223,9 +176,6 @@ loop:
 			}
 			// Caught SIGINT, we're done
 			return fmt.Errorf("Caught SIGINT before successful login")
-		case _ = <-readychan:
-			fmt.Printf("\033[2K\rvirtio journal connected - sshd started\n")
-			break loop
 		}
 	}
 
@@ -306,12 +256,6 @@ loop:
 	}
 
 	poweroffStarted := false
-	go func() {
-		msg, _ := readTrimmedLine(readyReader)
-		if msg == "poweroff" {
-			poweroffStarted = true
-		}
-	}()
 
 	go func() {
 		for {
@@ -333,7 +277,7 @@ loop:
 			}
 		}
 	}()
-	err = <-qemuWaitChan
+	err = inst.Wait()
 	if err == nil {
 		if !poweroffStarted {
 			fmt.Println("QEMU powered off unexpectedly")
