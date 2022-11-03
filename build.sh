@@ -15,7 +15,7 @@ fi
 
 arch=$(uname -m)
 
-if [ $# -gt 1 ]; then
+if [ $# -gt 1 ] && $1 != "build_baseimage_via_rpmostree"; then
   echo Usage: "build.sh [CMD]"
   echo "Supported commands:"
   echo "    configure_user"
@@ -97,6 +97,22 @@ install_rpms() {
     yum clean all
 }
 
+build_baseimage_via_rpmostree() {
+    local tmpd=$(mktemp -d)
+    local manifest=${tmpd}/manifest.yaml
+    cp /etc/yum.repos.d/* ${tmpd}
+    cat > ${manifest} << 'EOF'
+container: true
+releasever: 36
+repos:
+  - fedora
+  - updates
+packages:
+EOF
+    "${srcdir}"/src/print-dependencies.sh | sed -e 's,^,- ,' >> ${manifest}
+    sudo rpm-ostree compose image ${manifest} "$@"
+}
+
 # For now, we ship `oc` in coreos-assembler as {Fedora,RHEL} CoreOS is an essential part of OCP4,
 # and it is very useful to have in the same place/flow as where we do builds/tests related
 # to CoreOS.
@@ -152,7 +168,7 @@ write_archive_info() {
 
 if [ $# -ne 0 ]; then
   # Run the function specified by the calling script
-  ${1}
+  $@
 else
   # Otherwise, just run all the steps.  NOTE: This is presently not actually
   # used in `Dockerfile`, so if you add a stage you'll need to do it both
