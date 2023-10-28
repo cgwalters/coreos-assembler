@@ -1,5 +1,5 @@
 #!/bin/bash
-set -euo pipefail
+set -xeuo pipefail
 
 # This script is run in supermin to create a Fedora CoreOS style
 # disk image, very much in the spirit of the original
@@ -92,6 +92,7 @@ config="${config:?--config must be defined}"
 
 # https://github.com/coreos/coreos-assembler/pull/2480
 dump_err_info () {
+    lsblk || true
     lsblk -f || true
 }
 trap dump_err_info ERR
@@ -371,6 +372,10 @@ fi
 # Sanity check
 deploy_root="$rootfs/ostree/deploy/${os_name}/deploy/${deploy_commit}.0"
 test -d "${deploy_root}" || (echo "failed to find $deploy_root"; exit 1)
+
+cat >> "${deploy_root}"/etc/fstab << EOF
+/dev/disk/by-partlabel/boot /boot auto defaults 0 0
+EOF
 
 # This will allow us to track the version that an install
 # originally used; if we later need to understand something

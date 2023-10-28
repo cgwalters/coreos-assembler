@@ -1,0 +1,67 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+dn=$(dirname "$0")
+# shellcheck source=src/cmdlib.sh
+. "${dn}"/cmdlib.sh
+
+# Parse options
+src_imgref=$1
+shift
+target_imgref=$1
+shift
+disk=$1
+shift
+
+diskname=$(basename $disk)
+
+set -x
+
+export workdir="$(pwd)"
+mkdir -p tmp
+tmpdir=${workdir}/tmp
+
+# Nowadays we pull the container across virtiofs rather than accessing the repo, see
+# https://github.com/openshift/os/issues/594
+ostree_container=ostree-unverified-image:${src_imgref}
+
+disk_args=()
+qemu_args=()
+
+image_size="8000M"
+echo "Disk size estimated to ${image_size}"
+
+qemu-img create -f qcow2 "$tmpdir/${diskname}" "${image_size}"
+
+qemu_args+=("-drive" "if=none,id=target,format=qcow2,file=$tmpdir/${diskname},cache=unsafe" \
+              "-device" "virtio-blk,serial=target,drive=target")
+
+echo '{}' > $tmpdir/image.yaml
+write_image_json $tmpdir/"image.yaml" $tmpdir/"image-base.json"
+
+# Generate the JSON describing the disk we want to build
+cat >$tmpdir/image-dynamic.json << EOF
+{
+    "rootfs-size": "4000M",
+    "osname": "default",
+    "buildid": "0",
+    "imgid": "none",
+    "deploy-via-container": true,
+    "container-imgref": "${target_imgref}",
+    "ostree-commit": "",
+    "ostree-ref": "",
+    "ostree-container": "$src_imgref"
+}
+EOF
+cat "$tmpdir/image-base.json" "$tmpdir/image-dynamic.json" | jq -s add > "${tmpdir}/image.json"
+echo "{}" > ${tmpdir}/"platforms.json"
+
+runvm "${qemu_args[@]}" -- \
+            /usr/lib/coreos-assembler/create_disk.sh \
+                --config "${tmpdir}/image.json" \
+                --kargs "rw root=/dev/disk/by-partlabel/root" \
+                --platforms-json "${tmpdir}"/platforms.json \
+                "${disk_args[@]}"
+
+mv -Tf "$tmpdir/${diskname}" "${disk}"
+echo "Successfully generated: ${disk}"
